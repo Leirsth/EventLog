@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#f6f5f1">
+<link rel="manifest" href="./manifest.webmanifest">
+<title>EventLog</title>
+<style>
+:root{color-scheme:light dark;--bg:#f6f5f1;--card:#fff;--fg:#20211f;--muted:#74766f;--line:#e5e4dd;--soft:#e9eee9;--accent:#335d4b}
+@media(prefers-color-scheme:dark){:root{--bg:#171815;--card:#22241f;--fg:#f0f0e9;--muted:#a9aaa1;--line:#383a33;--soft:#303b32;--accent:#b4d6c1}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 -apple-system,BlinkMacSystemFont,sans-serif}
+main{max-width:700px;margin:auto;padding:22px 15px 40px}
+h1{font-size:30px;margin:0}
+h2{font-size:19px;margin:0 0 12px}
+.muted{color:var(--muted);font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:17px;padding:15px;margin:13px 0}
+.buttons{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.event{min-height:66px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--fg);font:inherit;padding:8px;font-weight:600}
+.event:active{background:var(--soft)}
+label{display:block;margin:9px 0 4px}
+select,input,button{font:inherit}
+select,input{width:100%;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--fg);min-height:42px}
+.filters,.stats,.toolbar{display:flex;gap:8px;margin:12px 0}
+.filters>div,.stat{flex:1;min-width:0}
+.stat{background:var(--soft);padding:11px;border-radius:11px}
+.stat strong{display:block;font-size:22px}
+.stat span{font-size:12px;color:var(--muted)}
+.toolbar button{flex:1;min-width:0;padding:10px 5px;border:0;border-radius:10px;background:var(--soft);color:var(--fg);font-weight:600;font-size:14px}
+.day{font-size:12px;color:var(--muted);font-weight:700;text-transform:uppercase;padding:12px 0 4px}
+.row{display:flex;align-items:center;gap:9px;border-bottom:1px solid var(--line);padding:12px 0}
+.detail{flex:1;min-width:0}
+.time{font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.delete{border:0;background:transparent;color:var(--muted);padding:8px 3px;font-size:13px}
+.empty{text-align:center;color:var(--muted);padding:22px 5px}
+</style>
+</head>
+<body>
+<main>
+<header>
+<p class="muted">PERSONAL LOG · OFFLINE</p>
+<h1>EventLog</h1>
+<p class="muted">Quick entries. Clear history.</p>
+</header>
+
+<section class="card">
+<h2>Log an event</h2>
+<div class="buttons" id="buttons"></div>
+<p class="muted">Tap a button to save the current date and time.</p>
+</section>
+
+<section class="card">
+<h2>History</h2>
+<label for="filter" class="muted">Category</label>
+<select id="filter">
+<option value="all">All events</option>
+<option value="food">Meals</option>
+<option value="medicine">Medication</option>
+<option value="sleep">Sleep</option>
+<option value="smoking">Smoking</option>
+<option value="drinking">Drinking</option>
+<option value="other">Other</option>
+</select>
+
+<div class="filters">
+<div><label for="from" class="muted">From</label><input type="date" id="from"></div>
+<div><label for="to" class="muted">To</label><input type="date" id="to"></div>
+</div>
+
+<div class="stats">
+<div class="stat"><strong id="count">0</strong><span>events shown</span></div>
+<div class="stat"><strong id="days">0</strong><span>days with entries</span></div>
+</div>
+
+<div id="history"></div>
+
+<div class="toolbar">
+<button id="import">Import CSV</button>
+<button id="export">Export CSV</button>
+<button id="backup">Backup JSON</button>
+</div>
+
+<input type="file" id="file" accept=".csv,text/csv" hidden>
+<p id="status" class="muted" role="status"></p>
+</section>
+
+<p class="muted" style="text-align:center">EventLog · Prototype · Export backups regularly.</p>
+</main>
+
+<script>
+'use strict';
+
+const STORAGE_KEY='eventlog.events.v1';
+
+const TYPES=[
+ {key:'viatris',label:'Medication',category:'medicine'},
+ {key:'ate',label:'Meal',category:'food'},
+ {key:'on bed',label:'Bedtime',category:'sleep'},
+ {key:'sleep',label:'Sleep',category:'sleep'},
+ {key:'wake',label:'Wake up',category:'sleep'},
+ {key:'off bed',label:'Out of bed',category:'sleep'},
+ {key:'smoke',label:'Smoking',category:'smoking'},
+ {key:'drink',label:'Drinking',category:'drinking'}
+];
+
+const $=id=>document.getElementById(id);
+
+function categoryFor(key){
+ const s=String(key||'').toLowerCase();
+ if(/viatris|med|pill|medication/.test(s))return 'medicine';
+ if(/ate|eat|food|meal|breakfast|lunch|dinner/.test(s))return 'food';
+ if(/sleep|wake|bed|dorm|despert|acost|levant/.test(s))return 'sleep';
+ if(/smok|cig|fumar/.test(s))return 'smoking';
+ if(/drink|beber|alcohol/.test(s))return 'drinking';
+ return 'other';
+}
+
+function labelFor(key){
+ const item=TYPES.find(x=>x.key===key);
+ return item?item.label:key;
+}
+
+function nowParts(d=new Date()){
+ return {
+  date:[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-'),
+  time:[String(d.getHours()).padStart(2,'0'),String(d.getMinutes()).padStart(2,'0'),String(d.getSeconds()).padStart(2,'0')].join(':')
+ };
+}
+
+function load(){
+ try{
+  const data=JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]');
+  return Array.isArray(data)?data:[];
+ }catch(e){
+  return [];
+ }
+}
+
+let events=load();
+
+function save(){
+ try{
+  localStorage.setItem(STORAGE_KEY,JSON.stringify(events));
+  $('status').textContent='Saved on this device.';
+ }catch(e){
+  $('status').textContent='Could not save. Export a backup and check browser storage.';
+ }
+}
+
+function escapeHTML(value){
+ return String(value??'').replace(/[&<>"']/g,c=>({
+  '&':'&amp;',
+  '<':'&lt;',
+  '>':'&gt;',
+  '"':'&quot;',
+  "'":'&#39;'
+ }[c]));
+}
+
+function logEvent(key){
+ const t=nowParts();
+ events.push({
+  id:Date.now()+'-'+Math.random().toString(16).slice(2),
+  date:t.date,
+  time:t.time,
+  button:key,
+  memo:'',
+  category:categoryFor(key)
+ });
+ save();
+ render();
+ $('status').textContent='Logged: '+labelFor(key)+' at '+t.time;
+}
+
+function renderButtons(){
+ $('buttons').innerHTML=TYPES.map(t=>
+  '<button class="event" type="button" data-key="'+escapeHTML(t.key)+'">'+
+  escapeHTML(t.label)+'</button>'
+ ).join('');
+
+ $('buttons').querySelectorAll('button').forEach(b=>{
+  b.addEventListener('click',()=>logEvent(b.dataset.key));
+ });
+}
+
+function parseCSV(text){
+ const rows=[];
+ let row=[],field='',quoted=false;
+
+ for(let i=0;i<text.length;i++){
+  const c=text[i];
+
+  if(quoted){
+   if(c==='"'&&text[i+1]==='"'){field+='"';i++;}
+   else if(c==='"')quoted=false;
+   else field+=c;
+  }else if(c==='"')quoted=true;
+  else if(c===','){row.push(field);field='';}
+  else if(c==='\n'){row.push(field);rows.push(row);row=[];field='';}
+  else if(c!=='\r')field+=c;
+ }
+
+ if(field.length||row.length){row.push(field);rows.push(row);}
+ if(!rows.length)return [];
+
+ const headers=rows.shift().map(x=>x.trim().toLowerCase());
+
+ return rows.filter(r=>r.some(x=>x.trim())).map(r=>
+  Object.fromEntries(headers.map((h,i)=>[h,r[i]??'']))
+ );
+}
+
+function render(){
+ const selected=$('filter').value;
+ const from=$('from').value;
+ const to=$('to').value;
+
+ const list=events.filter(e=>
+  (selected==='all'||(e.category||categoryFor(e.button))===selected)&&
+  (!from||e.date>=from)&&
+  (!to||e.date<=to)
+ ).sort((a,b)=>(b.date+' '+b.time).localeCompare(a.date+' '+a.time));
+
+ $('count').textContent=list.length;
+ $('days').textContent=new Set(list.map(e=>e.date)).size;
+
+ let output='',lastDate='';
+
+ for(const e of list){
+  if(e.date!==lastDate){
+   lastDate=e.date;
+   const d=new Date(e.date+'T12:00:00');
+   output+='<div class="day">'+escapeHTML(
+    isNaN(d)?e.date:d.toLocaleDateString('en-GB',{
+     weekday:'short',day:'numeric',month:'short',year:'numeric'
+    })
+   )+'</div>';
+  }
+
+  output+='<div class="row">'+
+   '<div class="detail"><strong>'+escapeHTML(labelFor(e.button))+'</strong>'+
+   (e.memo?'<div class="muted">'+escapeHTML(e.memo)+'</div>':'')+
+   '</div>'+
+   '<div class="time">'+escapeHTML(e.time)+'</div>'+
+   '<button class="delete" type="button" data-id="'+escapeHTML(e.id)+'">Delete</button>'+
+   '</div>';
+ }
+
+ $('history').innerHTML=output||
+  '<div class="empty">No events match these filters.</div>';
+
+ $('history').querySelectorAll('.delete').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+   if(!confirm('Delete this entry?'))return;
+
+   events=events.filter(e=>String(e.id)!==btn.dataset.id);
+   save();
+   render();
+   $('status').textContent='Entry deleted.';
+  });
+ });
+}
+
+function download(filename,content,type){
+ const url=URL.createObjectURL(new Blob([content],{type}));
+ const a=document.createElement('a');
+ a.href=url;
+ a.download=filename;
+ document.body.appendChild(a);
+ a.click();
+ a.remove();
+ setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+$('filter').addEventListener('change',render);
+$('from').addEventListener('change',render);
+$('to').addEventListener('change',render);
+
+$('import').addEventListener('click',()=>$('file').click());
+
+$('file').addEventListener('change',async ev=>{
+ const file=ev.target.files[0];
+ if(!file)return;
+
+ try{
+  const rows=parseCSV(await file.text());
+  let added=0;
+
+  const seen=new Set(events.map(e=>
+   [e.date,e.time,e.button,e.memo].join('|')
+  ));
+
+  for(const r of rows){
+   const key=String(r.button||r.event_type||r.type||'other').trim();
+   const now=nowParts();
+
+   const item={
+    id:Date.now()+'-'+Math.random().toString(16).slice(2),
+    date:r.date||now.date,
+    time:r.time||now.time,
+    button:key,
+    memo:r.memo||'',
+    category:categoryFor(key)
+   };
+
+   const signature=[item.date,item.time,item.button,item.memo].join('|');
+
+   if(!seen.has(signature)){
+    events.push(item);
+    seen.add(signature);
+    added++;
+   }
+  }
+
+  save();
+  render();
+  $('status').textContent='Import complete: '+added+' new entries from '+rows.length+' rows.';
+ }catch(err){
+  $('status').textContent='Import failed: '+err.message;
+ }
+
+ ev.target.value='';
+});
+
+$('export').addEventListener('click',()=>{
+ const rows=[
+  ['date','time','button','memo'],
+  ...events.map(e=>[e.date,e.time,e.button,e.memo])
+ ];
+
+ const csv=rows.map(row=>row.map(v=>{
+  const s=String(v??'');
+  return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;
+ }).join(',')).join('\r\n');
+
+ download('eventlog.csv','\ufeff'+csv,'text/csv;charset=utf-8');
+});
+
+$('backup').addEventListener('click',()=>{
+ download(
+  'eventlog-backup.json',
+  JSON.stringify({format:'eventlog-backup-v1',events},null,2),
+  'application/json'
+ );
+});
+
+renderButtons();
+render();
+
+if('serviceWorker' in navigator&&location.protocol==='https:'){
+ window.addEventListener('load',()=>{
+  navigator.serviceWorker.register('./sw.js').catch(()=>{});
+ });
+}
+</script>
+</body>
+</html>
